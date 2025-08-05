@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Stock Portfolio Balancing</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+<style>
+    body {
+        /* 1. APPLY THE NEW FONT to the whole page */
+        font-family: "Inter", sans-serif;
+        font-optical-sizing: auto;
+        font-weight: 200;
+        font-style: normal;
+    }
+    button, input, select, textarea, label {
+        font-family: inherit; 
+        font-size: 14px;
+    }
+    input {
+        display: block;
+        margin-bottom: 1em;
+    }
+    table {
+        border-collapse: collapse;
+        margin-top: 1em;
+        width: 100%;
+    }
+    th, td {
+        border: 1px solid #ccc;
+        padding:4px;
+        text-align: left;
+        /* 2. SET A SMALLER FONT SIZE for table cells */
+        font-size: 14px;
+    }
+    th {
+        background-color: #f2f2f2;
+    }
+    .controls {
+        display: flex;
+        gap: 1em;
+        margin-top: 2em;
+    }
+    .below-ma {
+        background-color: #e6ffed; /* Green highlight for good deals */
+    }
+</style>
+</head>
+<body>
+    <form action="/logout" method="POST" style="text-align: right;">
+        <button type="submit">Logout</button>
+    </form>
+    <h1>Stock Portfolio Balancing 📈</h1>
+
+    <h3 style="margin-top: 2em;">Find a Stock</h3>
+    <form action="/search" method="GET">
+        <input type="text" name="query" placeholder="Ticker or Company Name" required>
+        <button type="submit">Search</button>
+    </form>
+
+{{ if .searchResults }}
+    <h3>Search Results:</h3>
+    <table>
+        <tr>
+            <th>Symbol</th>
+            <th>Name</th>
+            <th>Exchange</th>
+        </tr>
+        {{ range .searchResults }}
+        <tr>
+            <td>{{ .Symbol }}</td>
+            <td>{{ .Name }}</td>
+            <td>{{ .Exchange }}</td>
+        </tr>
+        {{ end }}
+    </table>
+{{ end }}
+
+    <h3>Analysis</h3>
+    <div class="controls">
+        <form action="/analyze" method="POST">
+            <button type="submit">1. Analyze Prices & 200-Day MA</button>
+        </form>
+        <form action="/reweight" method="POST">
+            <button type="submit">2. Calculate €100 Reweight</button>
+        </form>
+    </div>
+
+    <h3>Current Holdings</h3>
+    <table>
+        <tr>
+            <th>Ticker</th>
+            <th>Name</th>
+            <th>Quantity</th>
+            <th>Purchase Price</th>
+            <th>Current Price</th>
+            <th>200-Day MA</th>
+            <th>Recommendation</th>
+        </tr>
+        
+        {{ range .stocks }}
+        <tr class="{{ if .IsBelowMA }}below-ma{{ end }}">
+            <td>{{ .Ticker }}</td>
+            <td>{{ .Name }}</td>
+            <td>{{ .Quantity }}</td>
+            <td>€{{ printf "%.2f" .Price }}</td>
+            <td>{{ if .CurrentPrice }}€{{ printf "%.2f" .CurrentPrice }}{{ end }}</td>
+            <td>{{ if .MA200 }}€{{ printf "%.2f" .MA200 }}{{ end }}</td>
+            <td>{{ .Recommendation }}</td>
+        </tr>
+        {{ end }}
+    </table>
+
+    <h3 style="margin-top: 2em;">Add New Stock</h3>
+    <form action="/add-stock" method="POST">
+        <label>Ticker:</label>
+        <input type="text" name="ticker" required>
+        <label>Name:</label>
+        <input type="text" name="name" required>
+        <label>Quantity:</label>
+        <input type="number" step="0.1"  name="quantity" required>
+        <label>Purchase Price:</label>
+        <input type="number" step="0.01" name="price" required>
+        <button type="submit">Add Stock</button>
+    </form>
+</body>
+</html>
