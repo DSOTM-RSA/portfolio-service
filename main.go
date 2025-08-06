@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -15,6 +17,11 @@ import (
 )
 
 const fmpApiKey = "4u2Cubq7CLRKNfVh8JUUPp3exZRO5apO"
+
+// Budget holds the current dynamic budget amount.
+type Budget struct {
+	Amount float64 `firestore:"amount"`
+}
 
 // Stock represents data about a stock.
 type Stock struct {
@@ -28,12 +35,17 @@ type Stock struct {
 	Recommendation string  `json:"recommendation"`
 }
 
-// albums slice to seed record album data.
-// var portfolio = []Stock{
-// 	{Ticker: "GOOGL", Name: "Alphabet Inc.", Quantity: 10.56, Price: 135.50},
-// 	{Ticker: "MSFT", Name: "Microsoft Corp.", Quantity: 20.34, Price: 330.80},
-// 	{Ticker: "AAPL", Name: "Apple Inc.", Quantity: 15.98, Price: 170.25},
-// }
+// InvestmentLog matches the structure of a document in the 'investment_logs' collection.
+type InvestmentLog struct {
+	ID               string    `firestore:"-"`
+	Ticker           string    `firestore:"ticker"`
+	Name             string    `firestore:"name"`
+	InvestmentAmount float64   `firestore:"investmentAmount"`
+	PricePerShare    float64   `firestore:"pricePerShare"`
+	QuantityBought   float64   `firestore:"quantityBought"`
+	Strategy         string    `firestore:"strategy"`
+	Timestamp        time.Time `firestore:"timestamp"`
+}
 
 var (
 	key   = []byte("super-secret-yek-12345678901234")
@@ -74,11 +86,16 @@ func main() {
 	protected := router.Group("/")
 	protected.Use(authMiddleware())
 	{
+		protected.GET("/logs", showLogsPage)
 		protected.GET("/", showPortfolioPage)
 		protected.GET("/search", handleSearch)
 		protected.POST("/add-stock", addStock)
+		protected.POST("/delete", handleDelete)
+		protected.POST("/update", handleUpdate)
 		protected.POST("/analyze", handleAnalysis)
-		protected.POST("/reweight", handleReweight)
+		protected.POST("/allocate", handleAllocation)
+		protected.POST("/update-budget", handleUpdateBudget)
+		protected.POST("/logs/delete", handleDeleteLog)
 	}
 
 	// Get the port from the environment variable for Cloud Run
@@ -95,39 +112,148 @@ func main() {
 // showPortfolioPage renders the portfolio page with the current stock data.
 func showPortfolioPage(c *gin.Context) {
 	ctx := context.Background()
-	var stocks []Stock // create an empty slice to hold stocks from Firestore
-
-	// Get an iterator for all documents in the "portfolio" collection
+	var stocks []Stock
+	// ... (your existing code to fetch stocks is the same) ...
 	iter := firestoreClient.Collection("portfolio").Documents(ctx)
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil { /* ... error handling ... */
+		}
+		var stock Stock
+		doc.DataTo(&stock)
+		stocks = append(stocks, stock)
+	}
 
-	// Iterate through the documents
+	// --- NEW: Fetch or Create the Budget ---
+	budgetDocRef := firestoreClient.Collection("settings").Doc("budget")
+	doc, err := budgetDocRef.Get(ctx)
+	var currentBudget Budget
+	if err != nil {
+		// If document doesn't exist, create it with the default value
+		log.Printf("Budget document not found, creating with default value...")
+		currentBudget = Budget{Amount: 100.0}
+		_, setErr := budgetDocRef.Set(ctx, currentBudget)
+		if setErr != nil {
+			log.Printf("Failed to create budget document: %v", setErr)
+		}
+	} else {
+		doc.DataTo(&currentBudget)
+	}
+
+	c.HTML(http.StatusOK, "index.tmpl.html", gin.H{
+		"stocks":        stocks,
+		"searchResults": nil,
+		"currentBudget": currentBudget.Amount, // Pass budget to the template
+	})
+}
+
+func handleDeleteLog(c *gin.Context) {
+	logID := c.PostForm("logID")
+	if logID == "" {
+		c.String(http.StatusBadRequest, "Log ID is required")
+		return
+	}
+
+	ctx := context.Background()
+	// Delete the document with the matching ID from the 'investment_logs' collection
+	_, err := firestoreClient.Collection("investment_logs").Doc(logID).Delete(ctx)
+	if err != nil {
+		log.Printf("Failed to delete log entry %s: %v", logID, err)
+		c.String(http.StatusInternalServerError, "Failed to delete log entry")
+		return
+	}
+
+	// Redirect back to the logs page
+	c.Redirect(http.StatusFound, "/logs")
+}
+
+// Add this new handler function
+func showLogsPage(c *gin.Context) {
+	ctx := context.Background()
+	var logs []InvestmentLog
+
+	// Fetch all documents from the 'investment_logs' collection, ordered by timestamp
+	iter := firestoreClient.Collection("investment_logs").OrderBy("timestamp", firestore.Desc).Documents(ctx)
 	for {
 		doc, err := iter.Next()
 		if err == iterator.Done {
 			break
 		}
 		if err != nil {
-			log.Printf("Failed to iterate: %v", err)
-			c.String(http.StatusInternalServerError, "Failed to fetch portfolio")
+			log.Printf("Failed to iterate logs: %v", err)
+			c.String(http.StatusInternalServerError, "Failed to fetch logs")
 			return
 		}
 
-		// Convert the document into a Stock struct
-		var stock Stock
-		if err := doc.DataTo(&stock); err != nil {
-			log.Printf("Failed to convert document to stock: %v", err)
-			continue // Skip to the next documents
+		var logEntry InvestmentLog
+		if err := doc.DataTo(&logEntry); err != nil {
+			log.Printf("Failed to convert log document: %v", err)
+			continue
 		}
-		stocks = append(stocks, stock)
+		logEntry.ID = doc.Ref.ID
+		logs = append(logs, logEntry)
 	}
 
-	c.HTML(http.StatusOK, "index.tmpl.html", gin.H{
-		"stocks":        stocks,
-		"searchResults": nil, // Ensure search results are empty on initial load
+	// --- Calculate Metrics ---
+	totalAmount := 0.0
+	investmentCounts := make(map[string]int)
+	investmentValues := make(map[string]float64)
+
+	for _, logEntry := range logs {
+		totalAmount += logEntry.InvestmentAmount
+		investmentCounts[logEntry.Ticker]++
+		investmentValues[logEntry.Ticker] += logEntry.InvestmentAmount
+	}
+
+	mostFrequentStock, mostFrequentCount := "", 0
+	for ticker, count := range investmentCounts {
+		if count > mostFrequentCount {
+			mostFrequentCount = count
+			mostFrequentStock = ticker
+		}
+	}
+
+	highestInvestedStock, highestInvestedValue := "", 0.0
+	for ticker, value := range investmentValues {
+		if value > highestInvestedValue {
+			highestInvestedValue = value
+			highestInvestedStock = ticker
+		}
+	}
+
+	// Render the logs page with the data and metrics
+	c.HTML(http.StatusOK, "logs.tmpl.html", gin.H{
+		"Logs":                 logs,
+		"TotalInvestments":     len(logs),
+		"TotalAmount":          totalAmount,
+		"MostFrequentStock":    mostFrequentStock,
+		"MostFrequentCount":    mostFrequentCount,
+		"HighestInvestedStock": highestInvestedStock,
+		"HighestInvestedValue": highestInvestedValue,
 	})
 }
 
-// Add this new handler function to main.go
+func handleUpdateBudget(c *gin.Context) {
+	amountStr := c.PostForm("amount")
+	amount, _ := strconv.ParseFloat(strings.Replace(amountStr, ",", ".", -1), 64)
+
+	ctx := context.Background()
+	budgetDocRef := firestoreClient.Collection("settings").Doc("budget")
+
+	// Update the 'amount' field in the 'budget' document
+	_, err := budgetDocRef.Update(ctx, []firestore.Update{
+		{Path: "amount", Value: amount},
+	})
+	if err != nil {
+		log.Printf("Failed to update budget: %v", err)
+	}
+
+	c.Redirect(http.StatusFound, "/")
+}
+
 func handleSearch(c *gin.Context) {
 	query := c.Query("query")
 	if query == "" {
@@ -142,8 +268,9 @@ func handleSearch(c *gin.Context) {
 		return
 	}
 
-	// Fetch the current portfolio to display alongside search results
 	ctx := context.Background()
+
+	// Fetch portfolio to display alongside search results
 	var stocks []Stock
 	iter := firestoreClient.Collection("portfolio").Documents(ctx)
 	for {
@@ -156,16 +283,79 @@ func handleSearch(c *gin.Context) {
 			c.Redirect(http.StatusFound, "/")
 			return
 		}
-
 		var stock Stock
 		doc.DataTo(&stock)
 		stocks = append(stocks, stock)
 	}
 
+	// --- FIX: Fetch the budget so it doesn't disappear ---
+	budgetDocRef := firestoreClient.Collection("settings").Doc("budget")
+	doc, err := budgetDocRef.Get(ctx)
+	if err != nil {
+		// If budget isn't found, just redirect, the main page will create it.
+		c.Redirect(http.StatusFound, "/")
+		return
+	}
+	var currentBudget Budget
+	doc.DataTo(&currentBudget)
+
 	c.HTML(http.StatusOK, "index.tmpl.html", gin.H{
 		"stocks":        stocks,
 		"searchResults": results,
+		"currentBudget": currentBudget.Amount, // Pass the budget to the template
 	})
+}
+
+func handleDelete(c *gin.Context) {
+	ticker := c.PostForm("ticker")
+	if ticker == "" {
+		c.String(http.StatusBadRequest, "Ticker is required")
+		return
+	}
+
+	ctx := context.Background()
+	// Delete the document with the matching ticker ID
+	_, err := firestoreClient.Collection("portfolio").Doc(ticker).Delete(ctx)
+	if err != nil {
+		log.Printf("Failed to delete stock %s: %v", ticker, err)
+		c.String(http.StatusInternalServerError, "Failed to delete stock")
+		return
+	}
+
+	c.Redirect(http.StatusFound, "/")
+}
+
+// main.go
+
+func handleUpdate(c *gin.Context) {
+	// The ticker now comes from the button's value, not a query parameter
+	ticker := c.PostForm("ticker")
+	quantityStr := c.PostForm("quantity")
+	priceStr := c.PostForm("price")
+
+	// Convert string values, handling potential commas from different locales
+	quantity, _ := strconv.ParseFloat(strings.Replace(quantityStr, ",", ".", -1), 64)
+	price, _ := strconv.ParseFloat(strings.Replace(priceStr, ",", ".", -1), 64)
+
+	if ticker == "" {
+		c.String(http.StatusBadRequest, "Ticker is required")
+		return
+	}
+
+	ctx := context.Background()
+	// Update specific fields in the document
+	_, err := firestoreClient.Collection("portfolio").Doc(ticker).Update(ctx, []firestore.Update{
+		{Path: "Quantity", Value: quantity},
+		{Path: "Price", Value: price},
+	})
+
+	if err != nil {
+		log.Printf("Failed to update stock %s: %v", ticker, err)
+		c.String(http.StatusInternalServerError, "Failed to update stock")
+		return
+	}
+
+	c.Redirect(http.StatusFound, "/")
 }
 
 func addStock(c *gin.Context) {
@@ -238,14 +428,23 @@ func handleAnalysis(c *gin.Context) {
 	c.Redirect(http.StatusFound, "/")
 }
 
-func handleReweight(c *gin.Context) {
-	const budget = 100.0
-	var totalScore float64
-
+func handleAllocation(c *gin.Context) {
 	ctx := context.Background()
 
-	// 1. Fetch all stocks from Firestore first
-	var stocksToUpdate []*Stock
+	// 1. Fetch the DYNAMIC BUDGET
+	budgetDocRef := firestoreClient.Collection("settings").Doc("budget")
+	doc, err := budgetDocRef.Get(ctx)
+	if err != nil {
+		log.Printf("Could not fetch budget for allocation: %v", err)
+		c.Redirect(http.StatusFound, "/")
+		return
+	}
+	var currentBudget Budget
+	doc.DataTo(&currentBudget)
+	budget := currentBudget.Amount
+
+	// 2. Fetch all stocks from Firestore
+	var portfolioStocks []*Stock
 	iter := firestoreClient.Collection("portfolio").Documents(ctx)
 	for {
 		doc, err := iter.Next()
@@ -253,40 +452,118 @@ func handleReweight(c *gin.Context) {
 			break
 		}
 		if err != nil {
-			log.Printf("Failed to iterate for reweight: %v", err)
+			log.Printf("Failed to iterate for allocation: %v", err)
 			c.Redirect(http.StatusFound, "/")
 			return
 		}
-
 		var stock Stock
 		doc.DataTo(&stock)
+		portfolioStocks = append(portfolioStocks, &stock)
+	}
 
-		// Reset previous recommendations and calculate score
-		stock.Recommendation = ""
-		if stock.IsBelowMA && stock.MA200 > 0 {
+	// 3. Primary Strategy
+	var eligibleStocks []*Stock
+	var totalScore float64
+	for _, stock := range portfolioStocks {
+		if stock.IsBelowMA && stock.MA200 > 0 && stock.CurrentPrice > 0 {
 			score := stock.MA200 - stock.CurrentPrice
 			totalScore += score
+			eligibleStocks = append(eligibleStocks, stock)
 		}
-		stocksToUpdate = append(stocksToUpdate, &stock)
 	}
 
-	// 2. Calculate and apply recommendations
-	if totalScore > 0 {
-		for _, stock := range stocksToUpdate {
-			if stock.IsBelowMA && stock.MA200 > 0 {
+	// 4. Handle Rollover or Allocation
+	if len(eligibleStocks) == 0 {
+		log.Println("No eligible stocks for investment. Budget will roll over.")
+	} else {
+		if totalScore > 0 {
+			recommendedTickers := make(map[string]bool)
+
+			for _, stock := range eligibleStocks {
 				score := stock.MA200 - stock.CurrentPrice
 				weight := score / totalScore
-				investment := budget * weight
-				stock.Recommendation = fmt.Sprintf("Invest €%.2f", investment)
+				investmentAmount := budget * weight
+				quantityToBuy := investmentAmount / stock.CurrentPrice
+				recommendationText := fmt.Sprintf("Invest €%.2f", investmentAmount)
+
+				recommendedTickers[stock.Ticker] = true
+
+				totalOldValue := stock.Price * stock.Quantity
+				newTotalQuantity := stock.Quantity + quantityToBuy
+				newAveragePrice := (totalOldValue + investmentAmount) / newTotalQuantity
+
+				// --- FIX: Remove the int() conversion for Quantity ---
+				_, err := firestoreClient.Collection("portfolio").Doc(stock.Ticker).Update(ctx, []firestore.Update{
+					{Path: "Quantity", Value: newTotalQuantity}, // Correctly pass the float64
+					{Path: "Price", Value: newAveragePrice},
+					{Path: "Recommendation", Value: recommendationText},
+				})
+				if err != nil {
+					log.Printf("Failed to auto-update portfolio for %s: %v", stock.Ticker, err)
+				}
+
+				// Log to 'investment_logs'
+				// This part is correct and doesn't need changes.
+				_, _, err = firestoreClient.Collection("investment_logs").Add(ctx, map[string]interface{}{
+					"ticker":           stock.Ticker,
+					"name":             stock.Name,
+					"investmentAmount": investmentAmount,
+					"pricePerShare":    stock.CurrentPrice,
+					"quantityBought":   quantityToBuy,
+					"strategy":         "200-Day MA Undervalued",
+					"timestamp":        time.Now(),
+				})
+				if err != nil {
+					log.Printf("Failed to add investment log for %s: %v", stock.Ticker, err)
+				}
 			}
+
+			// Clear recommendations for non-eligible stocks
+			for _, stock := range portfolioStocks {
+				if !recommendedTickers[stock.Ticker] {
+					firestoreClient.Collection("portfolio").Doc(stock.Ticker).Update(ctx, []firestore.Update{
+						{Path: "Recommendation", Value: ""},
+					})
+				}
+			}
+		}
+
+		// Reset budget after allocation
+		_, err := budgetDocRef.Update(ctx, []firestore.Update{
+			{Path: "amount", Value: 100.0},
+		})
+		if err != nil {
+			log.Printf("Failed to reset budget after allocation: %v", err)
 		}
 	}
 
-	// 3. Save all changes back to Firestore
-	for _, stock := range stocksToUpdate {
-		_, err := firestoreClient.Collection("portfolio").Doc(stock.Ticker).Set(ctx, stock)
-		if err != nil {
-			log.Printf("Failed to update stock %s for reweight: %v", stock.Ticker, err)
+	// 5. Naive Strategy (This part remains the same, just logging)
+	var totalPortfolioValue float64
+	// Recalculate total value based on original quantities for fair comparison
+	for _, stock := range portfolioStocks {
+		totalPortfolioValue += stock.CurrentPrice * float64(stock.Quantity)
+	}
+
+	if totalPortfolioValue > 0 {
+		for _, stock := range portfolioStocks {
+			stockValue := stock.CurrentPrice * float64(stock.Quantity)
+			weight := stockValue / totalPortfolioValue
+			investmentAmount := budget * weight
+			quantityToBuy := investmentAmount / stock.CurrentPrice
+
+			// Log this transaction to 'naive_strategy_logs'
+			_, _, err := firestoreClient.Collection("naive_strategy_logs").Add(ctx, map[string]interface{}{
+				"ticker":           stock.Ticker,
+				"name":             stock.Name,
+				"investmentAmount": investmentAmount,
+				"pricePerShare":    stock.CurrentPrice,
+				"quantityBought":   quantityToBuy,
+				"strategy":         "Naive Proportional Allocation",
+				"timestamp":        time.Now(),
+			})
+			if err != nil {
+				log.Printf("Failed to add naive strategy log for %s: %v", stock.Ticker, err)
+			}
 		}
 	}
 

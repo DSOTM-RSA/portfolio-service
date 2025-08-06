@@ -8,19 +8,15 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
 <style>
     body {
-        /* 1. APPLY THE NEW FONT to the whole page */
         font-family: "Inter", sans-serif;
         font-optical-sizing: auto;
-        font-weight: 200;
+        font-weight: 300;
         font-style: normal;
     }
     button, input, select, textarea, label {
         font-family: inherit; 
         font-size: 14px;
-    }
-    input {
-        display: block;
-        margin-bottom: 1em;
+        padding-bottom:4x ;
     }
     table {
         border-collapse: collapse;
@@ -29,28 +25,66 @@
     }
     th, td {
         border: 1px solid #ccc;
-        padding:4px;
+        padding: 4px 8px;      /* 1. Reduced vertical padding */
         text-align: left;
-        /* 2. SET A SMALLER FONT SIZE for table cells */
         font-size: 14px;
+        vertical-align: middle;/* 2. This is the key for vertical alignment */
     }
     th {
         background-color: #f2f2f2;
     }
-    .controls {
+    
+    /* 3. New styles for the purchase price input */
+    .price-input-wrapper {
         display: flex;
-        gap: 1em;
-        margin-top: 2em;
+        align-items: center; /* This vertically aligns the '€' and the input box */
+    }
+    .price-input-wrapper span {
+        padding-right: 4px; /* Adds a small space */
+    }
+    
+    /* A little extra styling for inputs and buttons inside the table */
+    td input {
+        border: 1px solid #ccc;
+        border-radius: 3px;
+        padding: 4px;
+    }
+    td button {
+        border: 1px solid #999;
+        border-radius: 3px;
+        background-color: #f0f0f0;
+        cursor: pointer;
+        padding: 4px 8px;
+    }
+    td button:hover {
+        background-color: #e0e0e0;
+    }
+    
+    .actions-wrapper {
+        display: flex;
+        gap: 5px;
+    }
+    form {
+        margin: 0; /* Removes extra space from forms */
     }
     .below-ma {
-        background-color: #e6ffed; /* Green highlight for good deals */
+        background-color: #e6ffed;
+    }
+    .controls {
+        display: flex;       /* This is the key: arranges children horizontally */
+        align-items: center; /* Vertically aligns the buttons nicely */
+        gap: 1em;            /* This creates a 1em space between the buttons */
+        margin-top: 1em;
     }
 </style>
 </head>
 <body>
-    <form action="/logout" method="POST" style="text-align: right;">
-        <button type="submit">Logout</button>
-    </form>
+    <nav style="display: flex; justify-content: space-between;">
+        <a href="/logs">View Investment Logs →</a>
+        <form action="/logout" method="POST">
+            <button type="submit">Logout</button>
+        </form>
+    </nav>
     <h1>Stock Portfolio Balancing 📈</h1>
 
     <h3 style="margin-top: 2em;">Find a Stock</h3>
@@ -77,15 +111,22 @@
     </table>
 {{ end }}
 
-    <h3>Analysis</h3>
+    <h3>Budget for Next Cycle</h3>
+        <form action="/update-budget" method="POST" class="controls">
+            <span>€</span>
+            <input type="number" step="0.01" name="amount" value="{{ printf "%.2f" .currentBudget }}" style="width: 100px;">
+            <button type="submit">Update Budget</button>
+        </form>
+        
+    <h3 style="margin-top: 2em;">Analysis</h3>
     <div class="controls">
         <form action="/analyze" method="POST">
             <button type="submit">1. Analyze Prices & 200-Day MA</button>
         </form>
-        <form action="/reweight" method="POST">
-            <button type="submit">2. Calculate €100 Reweight</button>
+        <form action="/allocate" method="POST">
+            <button type="submit">2. Allocate Funds & Log Strategies</button>
         </form>
-    </div>
+</div>
 
     <h3>Current Holdings</h3>
     <table>
@@ -97,17 +138,37 @@
             <th>Current Price</th>
             <th>200-Day MA</th>
             <th>Recommendation</th>
+            <th>Actions</th>
         </tr>
-        
+
         {{ range .stocks }}
         <tr class="{{ if .IsBelowMA }}below-ma{{ end }}">
             <td>{{ .Ticker }}</td>
             <td>{{ .Name }}</td>
-            <td>{{ .Quantity }}</td>
-            <td>€{{ printf "%.2f" .Price }}</td>
+
+            <form action="/update" method="POST" id="form-{{.Ticker}}"></form>
+            
+            <td>
+                <input type="number" name="quantity" step="0.1" value="{{ .Quantity }}" style="width: 70px;" form="form-{{.Ticker}}">
+            </td>
+            <td>
+                <div class="price-input-wrapper">
+                    <span>€</span>
+                    <input type="number" step="0.01" name="price" value="{{ printf "%.2f" .Price }}" style="width: 80px;" form="form-{{.Ticker}}">
+                </div>
+            </td>
             <td>{{ if .CurrentPrice }}€{{ printf "%.2f" .CurrentPrice }}{{ end }}</td>
             <td>{{ if .MA200 }}€{{ printf "%.2f" .MA200 }}{{ end }}</td>
             <td>{{ .Recommendation }}</td>
+            <td>
+                <div class="actions-wrapper">
+                    <button type="submit" name="ticker" value="{{.Ticker}}" form="form-{{.Ticker}}">Save</button>
+                    <form action="/delete" method="POST" onsubmit="return confirm('Are you sure you want to delete {{.Ticker}}?');">
+                        <input type="hidden" name="ticker" value="{{ .Ticker }}">
+                        <button type="submit">Delete</button>
+                    </form>
+                </div>
+            </td>
         </tr>
         {{ end }}
     </table>
