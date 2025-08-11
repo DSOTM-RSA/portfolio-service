@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -13,14 +14,14 @@ import (
 	"cloud.google.com/go/firestore"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/sessions"
+	"github.com/joho/godotenv"
 	"google.golang.org/api/iterator"
 )
 
-const fmpApiKey = "4u2Cubq7CLRKNfVh8JUUPp3exZRO5apO"
-
-// Budget holds the current dynamic budget amount.
-type Budget struct {
-	Amount float64 `firestore:"amount"`
+// The new Settings struct
+type Settings struct {
+	Amount          float64 `firestore:"amount"`
+	NextBatchNumber int     `firestore:"nextBatchNumber"`
 }
 
 // Stock represents data about a stock.
@@ -38,6 +39,7 @@ type Stock struct {
 // InvestmentLog matches the structure of a document in the 'investment_logs' collection.
 type InvestmentLog struct {
 	ID               string    `firestore:"-"`
+	Batch            int       `firestore:"batch"`
 	Ticker           string    `firestore:"ticker"`
 	Name             string    `firestore:"name"`
 	InvestmentAmount float64   `firestore:"investmentAmount"`
@@ -50,15 +52,43 @@ type InvestmentLog struct {
 var (
 	key   = []byte("super-secret-yek-12345678901234")
 	store = sessions.NewCookieStore(key)
-	users = map[string]string{
-		"admin": "flexyLion500",
-	}
+	users = make(map[string]string)
 )
 
 var (
 	firestoreClient *firestore.Client
-	projectID       = "portfolio-468119"
+	projectID       string
+	fmpApiKey       string
 )
+
+func init() {
+	// Attempt to load the .env file.
+	// This will not return an error if the file doesn't exist,
+	// which is perfect for production environments.
+	err := godotenv.Load()
+	if err != nil {
+		log.Println("No .env file found, using environment variables from OS")
+	}
+
+	projectID = os.Getenv("PROJECT_ID")
+	if projectID == "" {
+		log.Fatal("PROJECT_ID must be set")
+	}
+
+	fmpApiKey = os.Getenv("FMP_API_KEY")
+	if fmpApiKey == "" {
+		log.Fatal("FMP_API_KEY must be set")
+	}
+
+	// 2. READ the admin password from the environment.
+	adminPassword := os.Getenv("ADMIN_PASSWORD")
+	if adminPassword == "" {
+		log.Fatal("ADMIN_PASSWORD must be set")
+	}
+
+	// 3. POPULATE the users map with the loaded password.
+	users["admin"] = adminPassword
+}
 
 func createFirestoreClient(ctx context.Context) *firestore.Client {
 	client, err := firestore.NewClient(ctx, projectID)
@@ -127,26 +157,24 @@ func showPortfolioPage(c *gin.Context) {
 		stocks = append(stocks, stock)
 	}
 
-	// --- NEW: Fetch or Create the Budget ---
-	budgetDocRef := firestoreClient.Collection("settings").Doc("budget")
-	doc, err := budgetDocRef.Get(ctx)
-	var currentBudget Budget
+	settingsDocRef := firestoreClient.Collection("settings").Doc("app") // Use a clear doc ID
+	doc, err := settingsDocRef.Get(ctx)
+	var currentSettings Settings
 	if err != nil {
-		// If document doesn't exist, create it with the default value
-		log.Printf("Budget document not found, creating with default value...")
-		currentBudget = Budget{Amount: 100.0}
-		_, setErr := budgetDocRef.Set(ctx, currentBudget)
+		log.Printf("Settings document not found, creating with default values...")
+		currentSettings = Settings{Amount: 100.0, NextBatchNumber: 1} // Default settings
+		_, setErr := settingsDocRef.Set(ctx, currentSettings)
 		if setErr != nil {
-			log.Printf("Failed to create budget document: %v", setErr)
+			log.Printf("Failed to create settings document: %v", setErr)
 		}
 	} else {
-		doc.DataTo(&currentBudget)
+		doc.DataTo(&currentSettings)
 	}
 
 	c.HTML(http.StatusOK, "index.tmpl.html", gin.H{
 		"stocks":        stocks,
 		"searchResults": nil,
-		"currentBudget": currentBudget.Amount, // Pass budget to the template
+		"currentBudget": currentSettings.Amount, // Pass budget amount to template
 	})
 }
 
@@ -170,13 +198,52 @@ func handleDeleteLog(c *gin.Context) {
 	c.Redirect(http.StatusFound, "/logs")
 }
 
-// Add this new handler function
+func handleDeleteLogBatch(c *gin.Context) {
+	batchStr := c.PostForm("batch")
+	batch, _ := strconv.Atoi(batchStr)
+	if batch == 0 {
+		c.String(http.StatusBadRequest, "Invalid batch number")
+		return
+	}
+
+	ctx := context.Background()
+	// Find all documents in the naive logs collection with the matching batch number
+	query := firestoreClient.Collection("naive_strategy_logs").Where("batch", "==", batch)
+	iter := query.Documents(ctx)
+
+	// Use a batched write to delete all found documents efficiently
+	batchWrite := firestoreClient.Batch()
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			log.Printf("Failed to iterate for batch delete: %v", err)
+			break
+		}
+		batchWrite.Delete(doc.Ref)
+	}
+
+	// Commit the batched delete operation
+	_, err := batchWrite.Commit(ctx)
+	if err != nil {
+		log.Printf("Failed to commit batch delete for batch %d: %v", batch, err)
+	}
+
+	c.Redirect(http.StatusFound, "/logs")
+}
+
 func showLogsPage(c *gin.Context) {
 	ctx := context.Background()
-	var logs []InvestmentLog
 
-	// Fetch all documents from the 'investment_logs' collection, ordered by timestamp
-	iter := firestoreClient.Collection("investment_logs").OrderBy("timestamp", firestore.Desc).Documents(ctx)
+	// Create a map to group logs by batch number
+	// The key is the batch number (int), the value is a slice of logs
+	logBatches := make(map[int][]InvestmentLog)
+	var allLogs []InvestmentLog // A flat list for calculating overall metrics
+
+	// Fetch all documents from 'investment_logs', ordered to show newest batches first
+	iter := firestoreClient.Collection("investment_logs").OrderBy("batch", firestore.Desc).OrderBy("timestamp", firestore.Desc).Documents(ctx)
 	for {
 		doc, err := iter.Next()
 		if err == iterator.Done {
@@ -194,15 +261,18 @@ func showLogsPage(c *gin.Context) {
 			continue
 		}
 		logEntry.ID = doc.Ref.ID
-		logs = append(logs, logEntry)
+
+		// Add the log entry to the correct batch in the map
+		logBatches[logEntry.Batch] = append(logBatches[logEntry.Batch], logEntry)
+		allLogs = append(allLogs, logEntry) // Also add to the flat list for metrics
 	}
 
-	// --- Calculate Metrics ---
+	// --- Calculate Metrics from all logs ---
 	totalAmount := 0.0
 	investmentCounts := make(map[string]int)
 	investmentValues := make(map[string]float64)
 
-	for _, logEntry := range logs {
+	for _, logEntry := range allLogs {
 		totalAmount += logEntry.InvestmentAmount
 		investmentCounts[logEntry.Ticker]++
 		investmentValues[logEntry.Ticker] += logEntry.InvestmentAmount
@@ -224,10 +294,10 @@ func showLogsPage(c *gin.Context) {
 		}
 	}
 
-	// Render the logs page with the data and metrics
+	// Render the logs page with the grouped data and the overall metrics
 	c.HTML(http.StatusOK, "logs.tmpl.html", gin.H{
-		"Logs":                 logs,
-		"TotalInvestments":     len(logs),
+		"LogBatches":           logBatches,
+		"TotalInvestments":     len(allLogs),
 		"TotalAmount":          totalAmount,
 		"MostFrequentStock":    mostFrequentStock,
 		"MostFrequentCount":    mostFrequentCount,
@@ -241,10 +311,11 @@ func handleUpdateBudget(c *gin.Context) {
 	amount, _ := strconv.ParseFloat(strings.Replace(amountStr, ",", ".", -1), 64)
 
 	ctx := context.Background()
-	budgetDocRef := firestoreClient.Collection("settings").Doc("budget")
+	// FIX: Use the 'app' document ID for consistency
+	settingsDocRef := firestoreClient.Collection("settings").Doc("app")
 
-	// Update the 'amount' field in the 'budget' document
-	_, err := budgetDocRef.Update(ctx, []firestore.Update{
+	// Update the 'amount' field in the document
+	_, err := settingsDocRef.Update(ctx, []firestore.Update{
 		{Path: "amount", Value: amount},
 	})
 	if err != nil {
@@ -253,6 +324,8 @@ func handleUpdateBudget(c *gin.Context) {
 
 	c.Redirect(http.StatusFound, "/")
 }
+
+// main.go
 
 func handleSearch(c *gin.Context) {
 	query := c.Query("query")
@@ -270,7 +343,7 @@ func handleSearch(c *gin.Context) {
 
 	ctx := context.Background()
 
-	// Fetch portfolio to display alongside search results
+	// ... (fetching portfolio stocks is the same) ...
 	var stocks []Stock
 	iter := firestoreClient.Collection("portfolio").Documents(ctx)
 	for {
@@ -278,31 +351,27 @@ func handleSearch(c *gin.Context) {
 		if err == iterator.Done {
 			break
 		}
-		if err != nil {
-			log.Printf("Failed to iterate for search page: %v", err)
-			c.Redirect(http.StatusFound, "/")
-			return
+		if err != nil { /* ... error handling ... */
 		}
 		var stock Stock
 		doc.DataTo(&stock)
 		stocks = append(stocks, stock)
 	}
 
-	// --- FIX: Fetch the budget so it doesn't disappear ---
-	budgetDocRef := firestoreClient.Collection("settings").Doc("budget")
-	doc, err := budgetDocRef.Get(ctx)
+	// --- FIX: Use 'Settings' struct and 'app' document ID ---
+	settingsDocRef := firestoreClient.Collection("settings").Doc("app")
+	doc, err := settingsDocRef.Get(ctx)
 	if err != nil {
-		// If budget isn't found, just redirect, the main page will create it.
 		c.Redirect(http.StatusFound, "/")
 		return
 	}
-	var currentBudget Budget
-	doc.DataTo(&currentBudget)
+	var currentSettings Settings // Use the correct Settings struct
+	doc.DataTo(&currentSettings)
 
 	c.HTML(http.StatusOK, "index.tmpl.html", gin.H{
 		"stocks":        stocks,
 		"searchResults": results,
-		"currentBudget": currentBudget.Amount, // Pass the budget to the template
+		"currentBudget": currentSettings.Amount, // Pass the amount to the template
 	})
 }
 
@@ -358,12 +427,14 @@ func handleUpdate(c *gin.Context) {
 	c.Redirect(http.StatusFound, "/")
 }
 
+// main.go
+
 func addStock(c *gin.Context) {
 	var newStock Stock
 
-	// Bind the form data to the newStock struct
-	if err := c.Bind(&newStock); err != nil {
-		c.HTML(http.StatusBadRequest, "bad request: %v", err)
+	// Use ShouldBind for consistency with other handlers
+	if err := c.ShouldBind(&newStock); err != nil {
+		c.String(http.StatusBadRequest, "bad request: %v", err)
 		return
 	}
 
@@ -425,23 +496,25 @@ func handleAnalysis(c *gin.Context) {
 		log.Printf("Failed to add log entry: %v", err)
 	}
 
-	c.Redirect(http.StatusFound, "/")
+	c.Redirect(http.StatusFound, "/?status=analyzed")
 }
 
 func handleAllocation(c *gin.Context) {
 	ctx := context.Background()
 
-	// 1. Fetch the DYNAMIC BUDGET
-	budgetDocRef := firestoreClient.Collection("settings").Doc("budget")
-	doc, err := budgetDocRef.Get(ctx)
+	// 1. Fetch the DYNAMIC SETTINGS (Budget and Batch Number)
+	settingsDocRef := firestoreClient.Collection("settings").Doc("app")
+	doc, err := settingsDocRef.Get(ctx)
 	if err != nil {
 		log.Printf("Could not fetch budget for allocation: %v", err)
 		c.Redirect(http.StatusFound, "/")
 		return
 	}
-	var currentBudget Budget
-	doc.DataTo(&currentBudget)
-	budget := currentBudget.Amount
+	var currentSettings Settings
+	doc.DataTo(&currentSettings)
+
+	budget := currentSettings.Amount
+	batchNumber := currentSettings.NextBatchNumber // Get the current batch number
 
 	// 2. Fetch all stocks from Firestore
 	var portfolioStocks []*Stock
@@ -492,6 +565,8 @@ func handleAllocation(c *gin.Context) {
 				newTotalQuantity := stock.Quantity + quantityToBuy
 				newAveragePrice := (totalOldValue + investmentAmount) / newTotalQuantity
 
+				newTotalQuantity = math.Round(newTotalQuantity*100) / 100
+
 				// --- FIX: Remove the int() conversion for Quantity ---
 				_, err := firestoreClient.Collection("portfolio").Doc(stock.Ticker).Update(ctx, []firestore.Update{
 					{Path: "Quantity", Value: newTotalQuantity}, // Correctly pass the float64
@@ -505,6 +580,7 @@ func handleAllocation(c *gin.Context) {
 				// Log to 'investment_logs'
 				// This part is correct and doesn't need changes.
 				_, _, err = firestoreClient.Collection("investment_logs").Add(ctx, map[string]interface{}{
+					"batch":            batchNumber, // <-- ADD BATCH NUMBER
 					"ticker":           stock.Ticker,
 					"name":             stock.Name,
 					"investmentAmount": investmentAmount,
@@ -528,9 +604,10 @@ func handleAllocation(c *gin.Context) {
 			}
 		}
 
-		// Reset budget after allocation
-		_, err := budgetDocRef.Update(ctx, []firestore.Update{
+		// After a successful allocation, increment the batch number and reset the budget
+		_, err := settingsDocRef.Update(ctx, []firestore.Update{
 			{Path: "amount", Value: 100.0},
+			{Path: "nextBatchNumber", Value: batchNumber + 1}, // <-- INCREMENT BATCH
 		})
 		if err != nil {
 			log.Printf("Failed to reset budget after allocation: %v", err)
@@ -553,6 +630,7 @@ func handleAllocation(c *gin.Context) {
 
 			// Log this transaction to 'naive_strategy_logs'
 			_, _, err := firestoreClient.Collection("naive_strategy_logs").Add(ctx, map[string]interface{}{
+				"batch":            batchNumber,
 				"ticker":           stock.Ticker,
 				"name":             stock.Name,
 				"investmentAmount": investmentAmount,
@@ -567,7 +645,7 @@ func handleAllocation(c *gin.Context) {
 		}
 	}
 
-	c.Redirect(http.StatusFound, "/")
+	c.Redirect(http.StatusFound, "/?status=allocated")
 }
 
 // authMiddleware checks if the user is authenticated

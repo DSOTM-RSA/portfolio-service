@@ -4,8 +4,10 @@
     <meta charset="UTF-8">
     <title>Stock Portfolio Balancing</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
 <style>
     body {
         font-family: "Inter", sans-serif;
@@ -114,19 +116,19 @@
     <h3>Budget for Next Cycle</h3>
         <form action="/update-budget" method="POST" class="controls">
             <span>€</span>
-            <input type="number" step="0.01" name="amount" value="{{ printf "%.2f" .currentBudget }}" style="width: 100px;">
+            <input type="number" step="any" name="amount" value="{{ printf "%.2f" .currentBudget }}" style="width: 100px;">
             <button type="submit">Update Budget</button>
         </form>
         
     <h3 style="margin-top: 2em;">Analysis</h3>
     <div class="controls">
-        <form action="/analyze" method="POST">
+        <form action="/analyze" method="POST" onsubmit="showToast('Analyzing portfolio, please wait...', 'linear-gradient(to right, #00b09b, #96c93d)')">
             <button type="submit">1. Analyze Prices & 200-Day MA</button>
         </form>
-        <form action="/allocate" method="POST">
+        <form action="/allocate" method="POST" onsubmit="showToast('Allocating funds and logging strategies...', 'linear-gradient(to right, #ff5f6d, #ffc371)')">
             <button type="submit">2. Allocate Funds & Log Strategies</button>
         </form>
-</div>
+    </div>
 
     <h3>Current Holdings</h3>
     <table>
@@ -149,12 +151,12 @@
             <form action="/update" method="POST" id="form-{{.Ticker}}"></form>
             
             <td>
-                <input type="number" name="quantity" step="0.1" value="{{ .Quantity }}" style="width: 70px;" form="form-{{.Ticker}}">
+                <input type="number" name="quantity" step="any" value="{{ .Quantity }}" style="width: 70px;" form="form-{{.Ticker}}">
             </td>
             <td>
                 <div class="price-input-wrapper">
                     <span>€</span>
-                    <input type="number" step="0.01" name="price" value="{{ printf "%.2f" .Price }}" style="width: 80px;" form="form-{{.Ticker}}">
+                    <input type="number" step="any" name="price" value="{{ printf "%.2f" .Price }}" style="width: 80px;" form="form-{{.Ticker}}">
                 </div>
             </td>
             <td>{{ if .CurrentPrice }}€{{ printf "%.2f" .CurrentPrice }}{{ end }}</td>
@@ -185,5 +187,35 @@
         <input type="number" step="0.01" name="price" required>
         <button type="submit">Add Stock</button>
     </form>
+
+    <script>
+        function showToast(text, background) {
+            Toastify({
+                text: text,
+                duration: -1, // Stays until the page reloads
+                newWindow: true,
+                close: false,
+                gravity: "top",
+                position: "right",
+                stopOnFocus: true,
+                style: {
+                    background: background,
+                },
+            }).showToast();
+        }
+
+        // This runs when the page loads to check for a success message
+        document.addEventListener('DOMContentLoaded', function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const status = urlParams.get('status');
+
+            if (status === 'analyzed') {
+                Toastify({ text: "✅ Analysis Complete!", duration: 3000, gravity: "top", position: "right" }).showToast();
+            } else if (status === 'allocated') {
+                Toastify({ text: "✅ Funds Allocated & Logged!", duration:3000, gravity: "top", position: "right" }).showToast();
+            }
+        });
+    </script>
+
 </body>
 </html>

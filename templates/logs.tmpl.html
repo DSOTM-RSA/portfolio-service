@@ -24,6 +24,7 @@
         padding: 8px;
         text-align: left;
         font-size: 14px;
+        vertical-align: middle;
     }
     th {
         background-color: #f2f2f2;
@@ -38,8 +39,18 @@
     a:hover {
         text-decoration: underline;
     }
-
-    /* --- Updated Metric Box Styles --- */
+    button {
+        font-family: inherit;
+        font-size: 14px;
+        border: 1px solid #999;
+        border-radius: 3px;
+        background-color: #f0f0f0;
+        cursor: pointer;
+        padding: 4px 8px;
+    }
+    form {
+        margin: 0;
+    }
     .metrics {
         display: flex;
         gap: 2em;
@@ -54,14 +65,14 @@
     }
     .metric-box h3 {
         margin: 0 0 5px 0;
-        font-size: 14px; /* Make the title smaller */
-        font-weight: 300; /* Use a normal weight */
+        font-size: 14px;
+        font-weight: 400; /* Slightly bolder for better readability */
         color: #555;
     }
     .metric-box p {
         margin: 0;
-        font-size: 18px; /* Make the number smaller */
-        font-weight: 500; /* Make it bold but not overly so */
+        font-size: 18px;
+        font-weight: 600; /* Slightly bolder for better readability */
     }
 </style>
 </head>
@@ -92,6 +103,15 @@
     </div>
     {{ end }}
 
+    {{ range $batchNumber, $logsInBatch := .LogBatches }}
+    <div style="margin-top: 2em; display:flex; justify-content: space-between; align-items: center;">
+        <h2>Investment Batch #{{ $batchNumber }}</h2>
+        <form action="/logs/batch/delete" method="POST" onsubmit="return confirm('Delete all NAIVE strategy logs for batch #{{$batchNumber}}?');">
+            <input type="hidden" name="batch" value="{{ $batchNumber }}">
+            <button type="submit" style="background-color: #fff0f0; border-color: #d9a0a0; color: #a94442;">Delete Naive Logs for Batch</button>
+        </form>
+    </div>
+
     <table>
         <tr>
             <th>Date</th>
@@ -100,8 +120,9 @@
             <th>Amount Invested</th>
             <th>Price Per Share</th>
             <th>Quantity Bought</th>
-            <th>Actions</th> </tr>
-        {{ range .Logs }}
+            <th>Actions</th>
+        </tr>
+        {{ range $logsInBatch }}
         <tr>
             <td>{{ .Timestamp.Format "2 Jan 2006" }}</td>
             <td>{{ .Ticker }}</td>
@@ -118,5 +139,6 @@
         </tr>
         {{ end }}
     </table>
+    {{ end }}
 </body>
 </html>
