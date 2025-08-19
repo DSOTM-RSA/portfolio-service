@@ -58,18 +58,19 @@ func calculateSMA(prices []HistoricalPrice, period int) (float64, error) {
 
 }
 
-func fetchAndAnalyzeStock(ticker string) (currentPrice float64, ma200 float64, err error) {
-
+// The function signature now includes a new return value: []HistoricalPrice
+func fetchAndAnalyzeStock(ticker string) (currentPrice float64, ma200 float64, historicalData []HistoricalPrice, err error) {
 	url := fmt.Sprintf("https://financialmodelingprep.com/api/v3/historical-price-full/%s?timeseries=250&apikey=%s", ticker, fmpApiKey)
 
 	resp, err := http.Get(url)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to get data: %w", err)
+		// Return nil for the new historicalData slice on error
+		return 0, 0, nil, fmt.Errorf("failed to get data: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, 0, fmt.Errorf("bad status from API: %s", resp.Status)
+		return 0, 0, nil, fmt.Errorf("bad status from API: %s", resp.Status)
 	}
 
 	var result struct {
@@ -78,20 +79,24 @@ func fetchAndAnalyzeStock(ticker string) (currentPrice float64, ma200 float64, e
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, 0, fmt.Errorf("failed to decode JSON: %w", err)
+		return 0, 0, nil, fmt.Errorf("failed to decode JSON: %w", err)
 	}
 
-	if len(result.Historical) == 0 {
-		return 0, 0, fmt.Errorf("no historical prices found for %s", ticker)
+	// Assign the fetched data to the new return variable
+	historicalData = result.Historical
+
+	if len(historicalData) == 0 {
+		return 0, 0, historicalData, fmt.Errorf("no historical prices found for %s", ticker)
 	}
 
-	// the first price is the most recent
-	currentPrice = result.Historical[0].Close
+	currentPrice = historicalData[0].Close
 
-	//calcualte the 200-day SMA
-	ma200, err = calculateSMA(result.Historical, 200)
+	ma200, err = calculateSMA(historicalData, 200)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to calculate SMA: %w", err)
+		// Return the historical data even if SMA calculation fails, but also return the error
+		return currentPrice, 0, historicalData, fmt.Errorf("failed to calculate SMA: %w", err)
 	}
-	return currentPrice, ma200, nil
+
+	// Return all three values on success
+	return currentPrice, ma200, historicalData, nil
 }

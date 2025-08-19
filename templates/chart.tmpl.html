@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Strategy Performance</title>
+    <style>
+        body { font-family: "Inter", sans-serif; padding: 2em; }
+        nav { margin-bottom: 2em; }
+        a { text-decoration: none; color: #005a9c; }
+        #chart-container {
+            position: relative; /* Needed for spinner positioning */
+            min-height: 500px;
+            max-width: 900px;
+            margin: auto;
+        }
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #005a9c;
+            animation: spin 1s ease infinite;
+            position: absolute;
+            top: 40%; /* Adjust position to be more centered */
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 10;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+</head>
+<body>
+    <nav>
+        <a href="/">← Back to Portfolio</a>
+        <a href="/logs" style="margin-left: 2em;">← Back to Logs</a>
+    </nav>
+    <h1>Strategy Performance Comparison</h1>
+    <p>This chart shows the total portfolio value over time for your MA-200 strategy vs. the naive proportional strategy.</p>
+    
+    <div id="chart-container">
+        <div id="loading-spinner" class="spinner"></div>
+        <canvas id="myChart"></canvas>
+    </div>
+
+    <script>
+    (async function() {
+        const chartContainer = document.getElementById('chart-container');
+        const spinner = document.getElementById('loading-spinner');
+        const ctx = document.getElementById('myChart').getContext('2d');
+        let chart;
+
+        try {
+            const response = await fetch('/api/portfolio-history');
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const data = await response.json();
+
+            if (!data || data.length === 0) {
+                spinner.style.display = 'none';
+                chartContainer.innerHTML = "<p>Not enough historical data to generate a chart yet.</p>";
+                return;
+            }
+
+            const labels = data.map(p => new Date(p.date));
+            const maData = data.map(p => p.maValue);
+            const naiveData = data.map(p => p.naiveValue);
+            
+            spinner.style.display = 'none'; // Hide spinner before rendering chart
+
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'MA Strategy',
+                            data: maData,
+                            borderColor: '#4e79a7',
+                            backgroundColor: 'rgba(78, 121, 167, 0.3)',
+                            fill: true,
+                            tension: 0.1
+                        },
+                        {
+                            label: 'Naive Strategy',
+                            data: naiveData,
+                            borderColor: '#f28e2c',
+                            backgroundColor: 'rgba(242, 142, 44, 0.3)',
+                            fill: true,
+                            tension: 0.1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Portfolio Value: MA Strategy vs. Naive Strategy'
+                        },
+                        legend: {
+                            position: 'top',
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'week',
+                                tooltipFormat: 'MMM dd, yyyy',
+                                displayFormats: {
+                                    week: 'MMM dd'
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Date'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Portfolio Value (€)'
+                            },
+                            beginAtZero: false
+                        }
+                    }
+                }
+            });
+
+        } catch (error) {
+            spinner.style.display = 'none';
+            console.error('Error fetching or parsing chart data:', error);
+            chartContainer.innerHTML = "<p>Could not load chart data. Please try again later.</p>";
+        }
+    })();
+    </script>
+</body>
+</html>

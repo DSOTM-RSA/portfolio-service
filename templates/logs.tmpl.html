@@ -20,14 +20,14 @@
         width: 100%;
     }
     th, td {
-        border: 1px solid #ccc;
+        border: 1px solid #cccccc;
         padding: 8px;
         text-align: left;
         font-size: 14px;
         vertical-align: middle;
     }
     th {
-        background-color: #f2f2f2;
+        background-color: #d5e7e7;
     }
     nav {
         margin-bottom: 2em;
@@ -56,8 +56,8 @@
         gap: 2em;
         margin-bottom: 2em;
         padding: 1em;
-        background-color: #f9f9f9;
-        border: 1px solid #e0e0e0;
+        background-color: #d5e0e7;
+        border: 1px solid #d5e0e7;
         border-radius: 5px;
     }
     .metric-box {
@@ -67,18 +67,19 @@
         margin: 0 0 5px 0;
         font-size: 14px;
         font-weight: 400; /* Slightly bolder for better readability */
-        color: #555;
+        color: #3f3f3f;
     }
     .metric-box p {
         margin: 0;
-        font-size: 18px;
-        font-weight: 600; /* Slightly bolder for better readability */
+        font-size: 16px;
+        font-weight: 500; /* Slightly bolder for better readability */
     }
 </style>
 </head>
 <body>
     <nav>
         <a href="/">← Back to Portfolio</a>
+        <a href="/chart" style="margin-left: 2em;">View Performance Chart →</a>
     </nav>
     <h1>Investment Log History 📋</h1>
 
@@ -108,7 +109,7 @@
         <h2>Investment Batch #{{ $batchNumber }}</h2>
         <form action="/logs/batch/delete" method="POST" onsubmit="return confirm('Delete all NAIVE strategy logs for batch #{{$batchNumber}}?');">
             <input type="hidden" name="batch" value="{{ $batchNumber }}">
-            <button type="submit" style="background-color: #fff0f0; border-color: #d9a0a0; color: #a94442;">Delete Naive Logs for Batch</button>
+            <button type="submit" style="background-color: #de9784; border-color: #999; color: #010101;">Delete Naive Logs for Batch</button>
         </form>
     </div>
 

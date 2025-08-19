@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"html/template"
 	"log"
 	"math"
 	"net/http"
@@ -47,6 +49,13 @@ type InvestmentLog struct {
 	QuantityBought   float64   `firestore:"quantityBought"`
 	Strategy         string    `firestore:"strategy"`
 	Timestamp        time.Time `firestore:"timestamp"`
+}
+
+// PortfolioHistoryPoint represents the value of both strategies at a single point in time.
+type PortfolioHistoryPoint struct {
+	Date       int64   `json:"date"`
+	MAValue    float64 `json:"maValue"`
+	NaiveValue float64 `json:"naiveValue"`
 }
 
 var (
@@ -126,6 +135,8 @@ func main() {
 		protected.POST("/allocate", handleAllocation)
 		protected.POST("/update-budget", handleUpdateBudget)
 		protected.POST("/logs/delete", handleDeleteLog)
+		protected.GET("/chart", showChartPage)
+		protected.GET("/api/portfolio-history", handlePortfolioHistory)
 	}
 
 	// Get the port from the environment variable for Cloud Run
@@ -137,6 +148,29 @@ func main() {
 	// Start the server, listening on 0.0.0.0:{port}
 	router.Run(":" + port)
 
+}
+
+func showChartPage(c *gin.Context) {
+	// Create a slice of dummy data points for testing
+	dummyHistory := []PortfolioHistoryPoint{
+		{Date: time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC).UnixMilli(), MAValue: 100, NaiveValue: 100},
+		{Date: time.Date(2025, 7, 8, 0, 0, 0, 0, time.UTC).UnixMilli(), MAValue: 105, NaiveValue: 102},
+		{Date: time.Date(2025, 7, 15, 0, 0, 0, 0, time.UTC).UnixMilli(), MAValue: 112, NaiveValue: 108},
+		{Date: time.Date(2025, 7, 22, 0, 0, 0, 0, time.UTC).UnixMilli(), MAValue: 110, NaiveValue: 115},
+		{Date: time.Date(2025, 7, 29, 0, 0, 0, 0, time.UTC).UnixMilli(), MAValue: 120, NaiveValue: 118},
+	}
+
+	dummyDataJSON, err := json.Marshal(dummyHistory)
+	if err != nil {
+		log.Printf("Failed to marshal dummy data: %v", err)
+		c.String(http.StatusInternalServerError, "Failed to generate chart data")
+		return
+	}
+
+	// Pass the dummy data directly to the template
+	c.HTML(http.StatusOK, "chart.tmpl.html", gin.H{
+		"dummyData": template.JS(dummyDataJSON),
+	})
 }
 
 // showPortfolioPage renders the portfolio page with the current stock data.
@@ -469,7 +503,7 @@ func handleAnalysis(c *gin.Context) {
 		var stock Stock
 		doc.DataTo(&stock)
 
-		currentPrice, ma200, err := fetchAndAnalyzeStock(stock.Ticker)
+		currentPrice, ma200, _, err := fetchAndAnalyzeStock(stock.Ticker)
 		if err != nil {
 			fmt.Printf("Could not analyze %s: %v\n", stock.Ticker, err)
 			continue
@@ -692,4 +726,103 @@ func handleLogout(c *gin.Context) {
 	session.Values["authenticated"] = false
 	session.Save(c.Request, c.Writer)
 	c.Redirect(http.StatusFound, "/login")
+}
+
+func getPriceOnDate(prices []HistoricalPrice, date time.Time) float64 {
+	targetDateStr := date.Format("2006-01-02")
+	lastKnownPrice := 0.0
+	for _, p := range prices {
+		if p.Date > targetDateStr {
+			break // Stop once we've passed the target date
+		}
+		lastKnownPrice = p.Close
+	}
+	return lastKnownPrice
+}
+
+func handlePortfolioHistory(c *gin.Context) {
+	ctx := context.Background()
+
+	// 1. Fetch all logs for both strategies
+	var allLogs []InvestmentLog
+	collections := []string{"investment_logs", "naive_strategy_logs"}
+	for _, coll := range collections {
+		iter := firestoreClient.Collection(coll).OrderBy("timestamp", firestore.Asc).Documents(ctx) // Order Ascending now
+		for {
+			doc, err := iter.Next()
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				continue
+			}
+			var logEntry InvestmentLog
+			doc.DataTo(&logEntry)
+			allLogs = append(allLogs, logEntry)
+		}
+	}
+
+	if len(allLogs) == 0 {
+		c.JSON(http.StatusOK, []PortfolioHistoryPoint{})
+		return
+	}
+
+	// 2. Get all unique tickers
+	tickers := make(map[string]bool)
+	for _, logEntry := range allLogs {
+		tickers[logEntry.Ticker] = true
+	}
+
+	// 3. Fetch all required historical price data
+	priceHistory := make(map[string][]HistoricalPrice)
+	for ticker := range tickers {
+		_, _, historicalData, _ := fetchAndAnalyzeStock(ticker)
+		// Reverse the historical data so it's oldest to newest
+		for i, j := 0, len(historicalData)-1; i < j; i, j = i+1, j-1 {
+			historicalData[i], historicalData[j] = historicalData[j], historicalData[i]
+		}
+		priceHistory[ticker] = historicalData
+	}
+
+	// 4. Reconstruct portfolio values over time
+	var history []PortfolioHistoryPoint
+	holdingsMA := make(map[string]float64)
+	holdingsNaive := make(map[string]float64)
+	logIndex := 0
+
+	// Iterate from the first investment day to today
+	for d := allLogs[0].Timestamp; !d.After(time.Now()); d = d.AddDate(0, 0, 1) {
+		// Add any shares "bought" on this day
+		for logIndex < len(allLogs) && !allLogs[logIndex].Timestamp.After(d) {
+			logEntry := allLogs[logIndex]
+			if logEntry.Strategy == "200-Day MA Undervalued" {
+				holdingsMA[logEntry.Ticker] += logEntry.QuantityBought
+			} else {
+				holdingsNaive[logEntry.Ticker] += logEntry.QuantityBought
+			}
+			logIndex++
+		}
+
+		// We only need to calculate the value at the end of each week (Friday)
+		if d.Weekday() != time.Friday {
+			continue
+		}
+
+		// Calculate total portfolio value using the most recent price available
+		var maValue, naiveValue float64
+		for ticker, qty := range holdingsMA {
+			maValue += qty * getPriceOnDate(priceHistory[ticker], d)
+		}
+		for ticker, qty := range holdingsNaive {
+			naiveValue += qty * getPriceOnDate(priceHistory[ticker], d)
+		}
+
+		history = append(history, PortfolioHistoryPoint{
+			Date:       d.UnixMilli(),
+			MAValue:    maValue,
+			NaiveValue: naiveValue,
+		})
+	}
+
+	c.JSON(http.StatusOK, history)
 }
