@@ -1,5 +1,5 @@
 ## Portfolio Balancing
 
-- testing MA-200 versus a "naive" weighted investment approach
-- developed using Go
-- deployed to Google Cloud Run with Firestore
+- Compares three investment strategies: 200-Day Moving Average (MA), a "naive" proportional allocation, and a 112-day EMA trend-following signal.
+- Developed using Go.
+- Deployed to Google Cloud Run with Firestore.

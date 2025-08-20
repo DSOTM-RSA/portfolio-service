@@ -121,6 +121,7 @@
             <th>Amount Invested</th>
             <th>Price Per Share</th>
             <th>Quantity Bought</th>
+            <th>Strategy</th>
             <th>Actions</th>
         </tr>
         {{ range $logsInBatch }}
@@ -131,6 +132,7 @@
             <td>€{{ printf "%.2f" .InvestmentAmount }}</td>
             <td>€{{ printf "%.2f" .PricePerShare }}</td>
             <td>{{ printf "%.4f" .QuantityBought }}</td>
+            <td>{{ .Strategy }}</td>
             <td>
                 <form action="/logs/delete" method="POST" onsubmit="return confirm('Are you sure you want to delete this log entry?');">
                     <input type="hidden" name="logID" value="{{ .ID }}">

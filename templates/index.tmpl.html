@@ -138,7 +138,8 @@
             <th>Quantity</th>
             <th>Purchase Price</th>
             <th>Current Price</th>
-            <th>200-Day MA</th>
+            <th>MA-200</th>
+            <th>EMA-112</th>
             <th>Recommendation</th>
             <th>Actions</th>
         </tr>
@@ -161,6 +162,7 @@
             </td>
             <td>{{ if .CurrentPrice }}€{{ printf "%.2f" .CurrentPrice }}{{ end }}</td>
             <td>{{ if .MA200 }}€{{ printf "%.2f" .MA200 }}{{ end }}</td>
+            <td>{{ if .EMATrend }}{{ printf "%.4f" .EMATrend }}{{ end }}</td>
             <td>{{ .Recommendation }}</td>
             <td>
                 <div class="actions-wrapper">

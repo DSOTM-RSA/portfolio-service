@@ -36,6 +36,7 @@ type Stock struct {
 	MA200          float64 `json:"ma_200"`
 	IsBelowMA      bool    `json:"is_below_ma"`
 	Recommendation string  `json:"recommendation"`
+	EMATrend       float64 `json:"ema_trend"`
 }
 
 // InvestmentLog matches the structure of a document in the 'investment_logs' collection.
@@ -271,34 +272,33 @@ func handleDeleteLogBatch(c *gin.Context) {
 func showLogsPage(c *gin.Context) {
 	ctx := context.Background()
 
-	// Create a map to group logs by batch number
-	// The key is the batch number (int), the value is a slice of logs
 	logBatches := make(map[int][]InvestmentLog)
-	var allLogs []InvestmentLog // A flat list for calculating overall metrics
+	var allLogs []InvestmentLog
 
-	// Fetch all documents from 'investment_logs', ordered to show newest batches first
-	iter := firestoreClient.Collection("investment_logs").OrderBy("batch", firestore.Desc).OrderBy("timestamp", firestore.Desc).Documents(ctx)
-	for {
-		doc, err := iter.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			log.Printf("Failed to iterate logs: %v", err)
-			c.String(http.StatusInternalServerError, "Failed to fetch logs")
-			return
-		}
+	collections := []string{"investment_logs", "naive_strategy_logs", "ema_logs"}
 
-		var logEntry InvestmentLog
-		if err := doc.DataTo(&logEntry); err != nil {
-			log.Printf("Failed to convert log document: %v", err)
-			continue
-		}
-		logEntry.ID = doc.Ref.ID
+	for _, coll := range collections {
+		iter := firestoreClient.Collection(coll).OrderBy("batch", firestore.Desc).OrderBy("timestamp", firestore.Desc).Documents(ctx)
+		for {
+			doc, err := iter.Next()
+			if err == iterator.Done {
+				break
+			}
+			if err != nil {
+				log.Printf("Failed to iterate logs from %s: %v", coll, err)
+				continue // Continue to the next document or collection
+			}
 
-		// Add the log entry to the correct batch in the map
-		logBatches[logEntry.Batch] = append(logBatches[logEntry.Batch], logEntry)
-		allLogs = append(allLogs, logEntry) // Also add to the flat list for metrics
+			var logEntry InvestmentLog
+			if err := doc.DataTo(&logEntry); err != nil {
+				log.Printf("Failed to convert log document from %s: %v", coll, err)
+				continue
+			}
+			logEntry.ID = doc.Ref.ID
+
+			logBatches[logEntry.Batch] = append(logBatches[logEntry.Batch], logEntry)
+			allLogs = append(allLogs, logEntry)
+		}
 	}
 
 	// --- Calculate Metrics from all logs ---
@@ -503,7 +503,7 @@ func handleAnalysis(c *gin.Context) {
 		var stock Stock
 		doc.DataTo(&stock)
 
-		currentPrice, ma200, _, err := fetchAndAnalyzeStock(stock.Ticker)
+		currentPrice, ma200, emaTrend, _, err := fetchAndAnalyzeStock(stock.Ticker)
 		if err != nil {
 			fmt.Printf("Could not analyze %s: %v\n", stock.Ticker, err)
 			continue
@@ -513,6 +513,7 @@ func handleAnalysis(c *gin.Context) {
 		stock.CurrentPrice = currentPrice
 		stock.MA200 = ma200
 		stock.IsBelowMA = currentPrice < ma200
+		stock.EMATrend = emaTrend
 
 		// Save the updated stock data back to Firestore
 		_, err = firestoreClient.Collection("portfolio").Doc(stock.Ticker).Set(ctx, stock)
@@ -679,6 +680,71 @@ func handleAllocation(c *gin.Context) {
 		}
 	}
 
+	// 6. EMA-112 Strategy
+	if len(portfolioStocks) >= 3 {
+		var mostNegativeStock, firstPositiveStock, secondPositiveStock *Stock
+		minEma := math.MaxFloat64
+		maxEma1, maxEma2 := -math.MaxFloat64, -math.MaxFloat64
+
+		for _, stock := range portfolioStocks {
+			if stock.EMATrend < minEma {
+				minEma = stock.EMATrend
+				mostNegativeStock = stock
+			}
+			if stock.EMATrend > maxEma1 {
+				maxEma2 = maxEma1
+				secondPositiveStock = firstPositiveStock
+				maxEma1 = stock.EMATrend
+				firstPositiveStock = stock
+			} else if stock.EMATrend > maxEma2 {
+				maxEma2 = stock.EMATrend
+				secondPositiveStock = stock
+			}
+		}
+
+		// Log the hypothetical "sell" of the most negative stock
+		if mostNegativeStock != nil && mostNegativeStock.EMATrend < 0 {
+			_, _, err := firestoreClient.Collection("ema_logs").Add(ctx, map[string]interface{}{
+				"batch":            batchNumber,
+				"ticker":           mostNegativeStock.Ticker,
+				"name":             mostNegativeStock.Name,
+				"investmentAmount": -mostNegativeStock.CurrentPrice, // Negative for sell
+				"pricePerShare":    mostNegativeStock.CurrentPrice,
+				"quantityBought":   -1, // Negative for sell
+				"strategy":         "ema-approach",
+				"timestamp":        time.Now(),
+			})
+			if err != nil {
+				log.Printf("Failed to add EMA strategy sell log for %s: %v", mostNegativeStock.Ticker, err)
+			}
+		}
+
+		// Log the hypothetical "buy" of the two most positive stocks
+		if firstPositiveStock != nil && secondPositiveStock != nil && firstPositiveStock.EMATrend > 0 && secondPositiveStock.EMATrend > 0 {
+			totalPositiveEma := firstPositiveStock.EMATrend + secondPositiveStock.EMATrend
+			stocksToBuy := []*Stock{firstPositiveStock, secondPositiveStock}
+
+			for _, stock := range stocksToBuy {
+				weight := stock.EMATrend / totalPositiveEma
+				investmentAmount := budget * weight
+				quantityToBuy := investmentAmount / stock.CurrentPrice
+
+				_, _, err := firestoreClient.Collection("ema_logs").Add(ctx, map[string]interface{}{
+					"batch":            batchNumber,
+					"ticker":           stock.Ticker,
+					"name":             stock.Name,
+					"investmentAmount": investmentAmount,
+					"pricePerShare":    stock.CurrentPrice,
+					"quantityBought":   quantityToBuy,
+					"strategy":         "ema-approach",
+					"timestamp":        time.Now(),
+				})
+				if err != nil {
+					log.Printf("Failed to add EMA strategy buy log for %s: %v", stock.Ticker, err)
+				}
+			}
+		}
+	}
 	c.Redirect(http.StatusFound, "/?status=allocated")
 }
 
@@ -776,7 +842,7 @@ func handlePortfolioHistory(c *gin.Context) {
 	// 3. Fetch all required historical price data
 	priceHistory := make(map[string][]HistoricalPrice)
 	for ticker := range tickers {
-		_, _, historicalData, _ := fetchAndAnalyzeStock(ticker)
+		_, _, _, historicalData, _ := fetchAndAnalyzeStock(ticker)
 		// Reverse the historical data so it's oldest to newest
 		for i, j := 0, len(historicalData)-1; i < j; i, j = i+1, j-1 {
 			historicalData[i], historicalData[j] = historicalData[j], historicalData[i]

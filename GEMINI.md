@@ -9,7 +9,8 @@ This project is a web application for portfolio balancing, developed in Go. It a
 *   **Investment Strategy Simulation:** The core feature of the application is to compare two investment strategies:
     *   **200-Day MA Undervalued:** This strategy allocates a budget to stocks that are currently trading below their 200-day moving average.
     *   **Naive Proportional Allocation:** This strategy allocates the budget proportionally to the existing holdings in the portfolio.
-*   **Investment Logging:** The application logs all investment decisions for both strategies, allowing for detailed analysis and comparison.
+    *   **EMA Trend Following:** A hypothetical strategy that logs a "sell" for the stock with the most negative 112-day EMA trend and "buys" for the two stocks with the most positive trends.
+*   **Investment Logging:** The application logs all investment decisions for each of the three strategies into separate Firestore collections (`investment_logs`, `naive_strategy_logs`, `ema_logs`), allowing for detailed, side-by-side analysis and comparison.
 *   **Portfolio History Visualization:** The application provides a chart to visualize the performance of both investment strategies over time.
 *   **User Authentication:** A simple session-based authentication system is in place, with an "admin" user.
 
